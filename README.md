@@ -4,7 +4,7 @@ Forecasting indoor mould risk in UK homes 1 to 3 days ahead, from room temperatu
 
 Damp and mould in rented homes is a live problem in the UK. Awaab's Law now requires social landlords in England to act on hazards within fixed deadlines. Most landlords only hear about mould once a tenant reports it. This project asks whether cheap room sensors plus a weather forecast can flag the rooms heading into high-risk conditions a few days early, so that ventilation or heating advice can come before the mould does.
 
-**Status:** pipeline, evaluation and reporting code are written and tested. The full run on the 10 GB sensor archive is pending, so no headline numbers yet.
+**Status:** pipeline, evaluation, reporting and a small API with a dashboard are written and tested. The full run on the 10 GB sensor archive is pending, so no headline numbers yet.
 
 ## Data
 
@@ -67,7 +67,18 @@ python -m mould_risk.dataset       # room-day table with targets and features
 python -m mould_risk.evaluate      # cross-validation, results.csv, survey check
 python -m mould_risk.report        # skill over persistence, bootstrap intervals, lead times
 python -m mould_risk.sensitivity   # fRsi sweep (slow: six reduced cross-validation runs)
+python -m mould_risk.serve fit     # train the served model, one per horizon
+python -m mould_risk.serve run     # API and dashboard at http://127.0.0.1:8000
 ```
+
+The API replays the IDEAL data: give a room and a date and get the forecast the model would have made that morning. Endpoints:
+
+- `GET /rooms`: list of rooms
+- `GET /rooms/{id}/forecast?date=`: forecast hours, risk band and advice for each of the next 3 days
+- `GET /rooms/{id}/history`: observed hours per day
+- `GET /homes/{id}/forecast?date=`: every room in a home
+
+Interactive docs are at `/docs`, and `/` serves a dashboard. The served model is trained on every home, so its replayed scores are in-sample. The accuracy figures come from the cross-validation.
 
 Outputs go to `$MOULD_DATA/processed/`. Tests run on synthetic data and need no download:
 
