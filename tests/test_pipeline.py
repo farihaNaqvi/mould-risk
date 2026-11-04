@@ -107,3 +107,34 @@ def test_subsets_pick_low_income_and_pre_1919_homes():
     })
     sizes = {name: len(part) for name, part in subsets(df)}
     assert sizes == {"all": 3, "heating season": 2, "below median income": 1, "pre-1919": 2}
+
+
+def test_colder_walls_never_mean_fewer_risky_hours():
+    room = synthetic_room()
+    shares = [room_rows(room, f_rsi=f)["target"].mean() for f in (0.6, 0.7, 0.75, 0.85)]
+    assert all(a >= b for a, b in zip(shares, shares[1:]))
+    assert shares[0] > shares[-1]
+
+
+def synthetic_homes(n_homes=5):
+    from mould_risk.dataset import ROOM_FEATURES
+    parts = []
+    for i in range(n_homes):
+        rows = room_rows(synthetic_room(cold_from=12 + 2 * i), location=f"loc{i % 2}")
+        rows = rows.assign(roomid=i, homeid=i, equivalised_income="below_median", **{c: 1 for c in ROOM_FEATURES})
+        parts.append(rows)
+    data = pd.concat(parts, ignore_index=True)
+    for c in ("type", "clothesdrying", "hometype"):
+        data[c] = data[c].astype("category")
+    return data
+
+
+def test_sweep_scores_only_the_requested_models():
+    from mould_risk.evaluate import BASELINES, cross_validate
+    from mould_risk.sensitivity import score
+    df, importance = cross_validate(synthetic_homes(), 1, ["lightgbm_no_foresight"])
+    assert importance is None and "lightgbm_forecast" not in df
+    assert df["lightgbm_no_foresight"].between(0, 24).all()
+    rows = pd.DataFrame(score(df, 0.7, 1, ["lightgbm_no_foresight"]))
+    assert set(rows["model"]) == set(BASELINES) | {"lightgbm_no_foresight"}
+    assert (rows["f_rsi"] == 0.7).all() and rows["high_risk_share"].between(0, 1).all()

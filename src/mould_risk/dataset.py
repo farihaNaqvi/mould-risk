@@ -149,11 +149,16 @@ ROOM_FEATURES = ["type", "storey", "externalwalls", "windowsopen", "radiators", 
                  "hometype", "residents", "build_era_ord"]
 
 
-def build(f_rsi=F_RSI, error_scale=1.0):
-    rooms = room_table()
-    hourly = hourly_with_weather(
+def load_hourly(rooms):
+    return hourly_with_weather(
         pd.read_parquet(PROCESSED / "room_hourly.parquet"), pd.read_parquet(PROCESSED / "weather_hourly.parquet"), rooms
     )
+
+
+def build(f_rsi=F_RSI, error_scale=1.0, rooms=None, hourly=None):
+    """Room-day table. Pass rooms/hourly to reuse them across calls (e.g. the fRsi sweep)."""
+    rooms = room_table() if rooms is None else rooms
+    hourly = load_hourly(rooms) if hourly is None else hourly
     parts = []
     for roomid, g in hourly.groupby("roomid"):
         rows = room_rows(g, f_rsi, g["location"].iloc[0], error_scale)

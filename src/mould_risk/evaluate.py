@@ -60,19 +60,22 @@ def metrics(df, col):
     return out
 
 
-def cross_validate(data, h):
+def cross_validate(data, h, models=None):
+    """Out-of-fold predictions for `models` (default: all). Importance is None unless HEADLINE is run."""
+    models = list(FEATURES) if models is None else list(models)
     df = data[data["horizon"] == h].reset_index(drop=True)
     folds = GroupKFold(n_splits=FOLDS).split(df, groups=df["homeid"])
-    contrib = {}
+    contrib = []
     for train, test in folds:
-        for name, cols in FEATURES.items():
+        for name in models:
+            cols = FEATURES[name]
             model = lgb.train(PARAMS, lgb.Dataset(df.loc[train, cols], df.loc[train, "target"]), ROUNDS)
             df.loc[test, name] = model.predict(df.loc[test, cols])
             if name == HEADLINE:
                 c = model.predict(df.loc[test, cols], pred_contrib=True)[:, :-1]
-                contrib.setdefault(name, []).append(pd.DataFrame(np.abs(c), columns=cols))
-    df[list(FEATURES)] = df[list(FEATURES)].clip(0, 24)
-    importance = pd.concat(contrib[HEADLINE]).mean().sort_values(ascending=False)
+                contrib.append(pd.DataFrame(np.abs(c), columns=cols))
+    df[models] = df[models].clip(0, 24)
+    importance = pd.concat(contrib).mean().sort_values(ascending=False) if contrib else None
     return df, importance
 
 
