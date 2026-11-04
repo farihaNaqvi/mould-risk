@@ -1,5 +1,7 @@
 """Build the room-day forecasting table: targets, baselines and features for horizons 1-3 days."""
 
+import zlib
+
 import numpy as np
 import pandas as pd
 
@@ -12,6 +14,11 @@ F_RSI = 0.75
 MIN_HOURS = 20
 MIN_READINGS = 150
 HIGH_RISK_HOURS = 6
+# Assumed forecast error sd per horizon (days): outdoor temperature in C, outdoor RH in %.
+# Archived 2016-18 forecasts are not available, so forecasts are actuals plus this error.
+FORECAST_SD = {1: (1.0, 5.0), 2: (1.5, 7.0), 3: (2.0, 9.0)}
+ERROR_ORIGIN = pd.Timestamp("2015-01-01")
+ERROR_DAYS = 2000
 BUILD_ERA_ORDER = [
     "Before 1850", "1850-1899", "1900-1918", "1919-1930", "1931-1944", "1945-1964",
     "1965-1980", "1981-1990", "1991-1995", "1996-2001", "2002 or later",
@@ -60,7 +67,16 @@ def fav_hours(t_in, vp_in, t_out, f_rsi=F_RSI):
     return np.where(n >= MIN_HOURS, count * 24.0 / np.maximum(n, 1), np.nan)
 
 
-def room_rows(hourly: pd.DataFrame, f_rsi=F_RSI):
+def forecast_error(location, h, dates, scale=1.0):
+    """Daily forecast errors (t_out, rh_out), identical for every room sharing a location."""
+    rng = np.random.default_rng([zlib.crc32(str(location).encode()), h])
+    sd_t, sd_rh = FORECAST_SD[h]
+    e = rng.standard_normal((ERROR_DAYS, 2)) * np.array([sd_t, sd_rh]) * scale
+    i = (pd.DatetimeIndex(dates) - ERROR_ORIGIN).days
+    return e[i, 0], e[i, 1]
+
+
+def room_rows(hourly: pd.DataFrame, f_rsi=F_RSI, location=0, error_scale=1.0):
     days, m = day_matrices(hourly)
     fav = fav_hours(m["t_in"], m["vp_in"], m["t_out"], f_rsi)
     t_si = surface_temperature(m["t_in"], m["t_out"], f_rsi).ravel()
@@ -86,12 +102,15 @@ def room_rows(hourly: pd.DataFrame, f_rsi=F_RSI):
         idx = np.arange(7, n)
         target = fav[idx + h]
         physics = fav_hours(m["t_in"][idx], m["vp_in"][idx], m["t_out"][idx + h], f_rsi)
+        e_t, e_rh = forecast_error(location, h, days[idx + h], error_scale)
+        physics_fc = fav_hours(m["t_in"][idx], m["vp_in"][idx], m["t_out"][idx + h] + e_t[:, None], f_rsi)
         frame = pd.DataFrame({
             "date": days[idx],
             "horizon": h,
             "target": target,
             "persistence": fav[idx],
             "physics_persistence": physics,
+            "physics_forecast": physics_fc,
             "fav_lag1": fav[idx - 1],
             "fav_lag2": fav[idx - 2],
             "fav_mean7": fav_s.rolling(7, min_periods=5).mean().to_numpy()[idx],
@@ -101,7 +120,11 @@ def room_rows(hourly: pd.DataFrame, f_rsi=F_RSI):
             "t_out_min_target": daily["t_out_min"][idx + h],
             "rh_out_mean_target": daily["rh_out_mean"][idx + h],
         })
+        frame["t_out_mean_target_fc"] = frame["t_out_mean_target"] + e_t
+        frame["t_out_min_target_fc"] = frame["t_out_min_target"] + e_t
+        frame["rh_out_mean_target_fc"] = (frame["rh_out_mean_target"] + e_rh).clip(0, 100)
         frame["t_out_change"] = frame["t_out_mean_target"] - frame["t_out_mean"]
+        frame["t_out_change_fc"] = frame["t_out_mean_target_fc"] - frame["t_out_mean"]
         target_day = days[idx + h]
         frame["doy_sin"] = np.sin(2 * np.pi * target_day.day_of_year / 365.25)
         frame["doy_cos"] = np.cos(2 * np.pi * target_day.day_of_year / 365.25)
@@ -119,21 +142,21 @@ def hourly_with_weather(room_hourly, weather_hourly, rooms):
     rh = rh.merge(rooms[["roomid", "location"]], on="roomid")
     rh = rh.merge(weather_hourly, left_on=["location", "ts"], right_on=["locationid", "ts"], how="left")
     rh["vp_in"] = vapour_pressure(rh["t_in"], rh["rh_in"])
-    return rh[["homeid", "roomid", "ts", "t_in", "vp_in", "t_out", "rh_out"]]
+    return rh[["homeid", "roomid", "location", "ts", "t_in", "vp_in", "t_out", "rh_out"]]
 
 
 ROOM_FEATURES = ["type", "storey", "externalwalls", "windowsopen", "radiators", "clothesdrying",
                  "hometype", "residents", "build_era_ord"]
 
 
-def build(f_rsi=F_RSI):
+def build(f_rsi=F_RSI, error_scale=1.0):
     rooms = room_table()
     hourly = hourly_with_weather(
         pd.read_parquet(PROCESSED / "room_hourly.parquet"), pd.read_parquet(PROCESSED / "weather_hourly.parquet"), rooms
     )
     parts = []
     for roomid, g in hourly.groupby("roomid"):
-        rows = room_rows(g, f_rsi)
+        rows = room_rows(g, f_rsi, g["location"].iloc[0], error_scale)
         if len(rows):
             rows.insert(0, "roomid", roomid)
             parts.append(rows)
