@@ -6,3 +6,21 @@ __pycache__/
 PROGRESS.md
 .env
 CLAUDE.md
+
+# local tool / editor config
+.serena/
+.claude/
+.vscode/
+.idea/
+
+# secrets and credentials
+.env.*
+*.pem
+*.key
+secrets*
+credentials*
+
+# data and outputs (data lives on D:, never in the repo)
+*.zip
+*.parquet
+*.csv
