@@ -76,10 +76,21 @@ def cross_validate(data, h):
     return df, importance
 
 
+PRE_1919 = 2
+
+
+def subsets(df):
+    """IDEAL has no tenure field; low income and pre-1919 stock stand in for the homes Awaab's Law targets."""
+    yield "all", df
+    yield "heating season", df[df["date"].dt.month.isin([10, 11, 12, 1, 2, 3, 4])]
+    yield "below median income", df[df["equivalised_income"] == "below_median"]
+    yield "pre-1919", df[df["build_era_ord"] <= PRE_1919]
+
+
 def results_table(preds):
     rows = []
     for h, df in preds.items():
-        for subset, part in (("all", df), ("heating season", df[df["date"].dt.month.isin([10, 11, 12, 1, 2, 3, 4])])):
+        for subset, part in subsets(df):
             for model in BASELINES + list(FEATURES):
                 rows.append({"horizon": h, "subset": subset, "model": model, "n": len(part), **metrics(part, model)})
     return pd.DataFrame(rows)

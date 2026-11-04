@@ -43,7 +43,7 @@ def room_table():
     rooms = rooms[rooms["type"].isin(ROOM_TYPES) & (pd.to_numeric(rooms["externalwalls"], errors="coerce") > 0)]
     rooms = rooms[~rooms["roomid"].isin(flagged_rooms())]
     homes = homes.assign(build_era_ord=homes["build_era"].map({e: i for i, e in enumerate(BUILD_ERA_ORDER)}))
-    cols = ["homeid", "location", "hometype", "residents", "build_era_ord"]
+    cols = ["homeid", "location", "hometype", "residents", "build_era_ord", "equivalised_income"]
     return rooms.merge(homes[cols], on="homeid", how="inner")
 
 
@@ -161,7 +161,7 @@ def build(f_rsi=F_RSI, error_scale=1.0):
             rows.insert(0, "roomid", roomid)
             parts.append(rows)
     data = pd.concat(parts, ignore_index=True)
-    data = data.merge(rooms[["roomid", "homeid", *ROOM_FEATURES]], on="roomid")
+    data = data.merge(rooms[["roomid", "homeid", "equivalised_income", *ROOM_FEATURES]], on="roomid")
     for c in ("type", "clothesdrying", "hometype"):
         data[c] = data[c].astype("category")
     return data
