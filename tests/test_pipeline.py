@@ -1,0 +1,69 @@
+import gzip
+import zipfile
+
+import numpy as np
+import pandas as pd
+import pytest
+
+from mould_risk import ingest
+from mould_risk.dataset import fav_hours, room_rows
+from mould_risk.evaluate import metrics
+from mould_risk.physics import vapour_pressure
+
+
+def test_parse_name_reads_ids_and_ignores_other_sensors():
+    meta = ingest.parse_name("sensordata/home86_kitchenliving932_sensor3503_room_humidity.csv.gz")
+    assert meta == {"homeid": 86, "roomtype": "kitchenliving", "roomid": 932, "sensorid": 3503, "kind": "humidity"}
+    assert ingest.parse_name("home86_study932_sensor3502_room_light.csv.gz") is None
+    assert ingest.parse_name("home96_kitchen999_sensor9110_electric-appliance_kettle.csv.gz") is None
+
+
+@pytest.mark.parametrize("header", [b"", b"timestamp,value\n"])
+def test_member_is_reduced_to_hourly_means_in_real_units(tmp_path, header):
+    body = b"".join(f"2017-01-01 00:{m:02d}:00,{200 + m}\n".encode() for m in range(60))
+    body += b"2017-01-01 01:00:12,300\n"
+    path = tmp_path / "room.zip"
+    name = "home1_bedroom10_sensor5_room_temperature.csv.gz"
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr(name, gzip.compress(header + body))
+    out = ingest.process_member((path, name))
+    assert list(out["n"]) == [60, 1]
+    assert out["value"].iloc[0] == pytest.approx(22.95)
+    assert out["value"].iloc[1] == pytest.approx(30.0)
+    assert set(out["roomid"]) == {10}
+
+
+def test_fav_hours_scales_partial_days_and_drops_sparse_ones():
+    t_in = np.full((2, 24), 18.0)
+    vp = np.full((2, 24), vapour_pressure(18.0, 70.0))
+    t_out = np.full((2, 24), 0.0)
+    t_in[0, :2] = np.nan
+    t_in[1, :10] = np.nan
+    out = fav_hours(t_in, vp, t_out)
+    assert out[0] == pytest.approx(24.0)
+    assert np.isnan(out[1])
+
+
+def synthetic_room(days=30, cold_from=20):
+    ts = pd.date_range("2017-01-01", periods=days * 24, freq="h")
+    t_out = np.where(np.arange(len(ts)) >= cold_from * 24, -2.0, 10.0)
+    return pd.DataFrame({
+        "ts": ts, "t_in": 18.0, "vp_in": vapour_pressure(18.0, 62.0), "t_out": t_out, "rh_out": 85.0,
+    })
+
+
+def test_physics_persistence_sees_the_cold_spell_that_persistence_misses():
+    rows = room_rows(synthetic_room())
+    h3 = rows[rows["horizon"] == 3].set_index("date")
+    day = pd.Timestamp("2017-01-18")
+    assert h3.loc[day, "persistence"] == 0
+    assert h3.loc[day, "target"] == 24
+    assert h3.loc[day, "physics_persistence"] == 24
+    assert set(rows["horizon"]) == {1, 2, 3}
+
+
+def test_metrics_count_onsets():
+    df = pd.DataFrame({"target": [10, 10, 0, 0], "persistence": [0, 10, 0, 10], "m": [8, 0, 0, 7]})
+    out = metrics(df, "m")
+    assert out["onset_n"] == 1 and out["onset_recall"] == 1.0
+    assert out["precision"] == 0.5 and out["recall"] == 0.5
