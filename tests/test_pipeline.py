@@ -138,3 +138,49 @@ def test_sweep_scores_only_the_requested_models():
     rows = pd.DataFrame(score(df, 0.7, 1, ["lightgbm_no_foresight"]))
     assert set(rows["model"]) == set(BASELINES) | {"lightgbm_no_foresight"}
     assert (rows["f_rsi"] == 0.7).all() and rows["high_risk_share"].between(0, 1).all()
+
+
+def toy_preds():
+    """One room, issue days 1-6. Target day = date + horizon. High-risk episode starts on day 5."""
+    fav = {d: (12.0 if d >= 5 else 0.0) for d in range(0, 10)}
+    day = lambda d: pd.Timestamp("2017-01-01") + pd.Timedelta(days=d)
+    rows = []
+    for h in HORIZONS_T:
+        for d in range(1, 7):
+            rows.append({"roomid": 1, "homeid": 1, "date": day(d), "horizon": h, "target": fav[d + h],
+                         "persistence": fav[d],
+                         "good": fav[d + h],                          # perfect forecast
+                         "short": fav[d + h] if h == 1 else fav[d]})  # only sees 1 day ahead
+    return pd.DataFrame(rows)
+
+
+HORIZONS_T = (1, 2, 3)
+
+
+def test_lead_time_counts_days_of_warning_before_an_episode():
+    from mould_risk.report import episode_starts, lead_times
+    preds = toy_preds()
+    starts = episode_starts(preds)
+    assert list(starts["start"]) == [pd.Timestamp("2017-01-06")]
+    assert lead_times(preds, "good") == {"model": "good", "episodes": 1, "lead_1d": 1.0, "lead_2d": 1.0, "lead_3d": 1.0}
+    short = lead_times(preds, "short")
+    assert short["lead_1d"] == 1.0 and short["lead_2d"] == 0.0 and short["lead_3d"] == 0.0
+    assert lead_times(preds, "persistence")["lead_1d"] == 0.0
+
+
+def test_skill_is_zero_for_persistence_and_bootstrap_brackets_the_estimate():
+    from mould_risk.report import bootstrap_gain, skill_table
+    results = pd.DataFrame({"horizon": 1, "subset": "all", "model": ["persistence", "m"], "n": 10,
+                            "mae": [2.0, 1.5], "f1": [0.5, 0.6], "recall": [0.4, 0.7],
+                            "onset_recall": [0.0, 0.3], "onset_n": 5})
+    s = skill_table(results).set_index("model")
+    assert s.loc["persistence", "mae_skill"] == 0 and s.loc["m", "mae_skill"] == pytest.approx(0.25)
+    assert s.loc["m", "recall_gain"] == pytest.approx(0.3)
+    rng = np.random.default_rng(1)
+    n = 400
+    target = rng.uniform(0, 24, n)
+    df = pd.DataFrame({"homeid": np.repeat(np.arange(20), n // 20), "target": target,
+                       "persistence": target + rng.normal(0, 6, n), "m": target + rng.normal(0, 2, n)})
+    b = bootstrap_gain(df, "m", n=200)
+    assert b["mae_skill_lo"] <= b["mae_skill"] <= b["mae_skill_hi"]
+    assert b["mae_skill_lo"] > 0 and b["f1_gain"] > 0 and b["homes"] == 20
