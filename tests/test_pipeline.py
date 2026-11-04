@@ -94,3 +94,16 @@ def test_no_foresight_models_never_see_target_day_weather():
     assert not leaky & set(FEATURES["lightgbm_no_foresight"])
     assert not leaky & set(FEATURES["lightgbm_forecast"]) - {"physics_persistence"}
     assert "physics_persistence" not in FEATURES["hybrid_forecast"]
+
+
+def test_subsets_pick_low_income_and_pre_1919_homes():
+    from mould_risk.dataset import BUILD_ERA_ORDER
+    from mould_risk.evaluate import PRE_1919, subsets
+    assert BUILD_ERA_ORDER[PRE_1919] == "1900-1918"
+    df = pd.DataFrame({
+        "date": pd.to_datetime(["2017-01-05", "2017-07-05", "2017-01-06"]),
+        "equivalised_income": ["below_median", "above_median", "missing"],
+        "build_era_ord": [1, 5, 2],
+    })
+    sizes = {name: len(part) for name, part in subsets(df)}
+    assert sizes == {"all": 3, "heating season": 2, "below median income": 1, "pre-1919": 2}
