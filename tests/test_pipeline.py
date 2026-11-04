@@ -6,8 +6,8 @@ import pandas as pd
 import pytest
 
 from mould_risk import ingest
-from mould_risk.dataset import fav_hours, room_rows
-from mould_risk.evaluate import metrics
+from mould_risk.dataset import FORECAST_SD, fav_hours, forecast_error, room_rows
+from mould_risk.evaluate import FEATURES, metrics
 from mould_risk.physics import vapour_pressure
 
 
@@ -67,3 +67,30 @@ def test_metrics_count_onsets():
     out = metrics(df, "m")
     assert out["onset_n"] == 1 and out["onset_recall"] == 1.0
     assert out["precision"] == 0.5 and out["recall"] == 0.5
+
+
+def test_forecast_error_is_shared_by_location_and_sized_by_horizon():
+    dates = pd.date_range("2016-01-01", periods=600, freq="D")
+    a_t, _ = forecast_error("loc1", 1, dates)
+    b_t, _ = forecast_error("loc1", 1, dates)
+    c_t, _ = forecast_error("loc2", 1, dates)
+    h3_t, _ = forecast_error("loc1", 3, dates)
+    assert np.array_equal(a_t, b_t) and not np.array_equal(a_t, c_t)
+    assert np.std(a_t) == pytest.approx(FORECAST_SD[1][0], rel=0.15)
+    assert np.std(h3_t) == pytest.approx(FORECAST_SD[3][0], rel=0.15)
+    assert np.all(forecast_error("loc1", 1, dates, scale=0.0)[0] == 0)
+
+
+def test_forecast_rows_carry_noisy_weather_and_zero_error_matches_oracle():
+    rows = room_rows(synthetic_room(), location="loc1")
+    assert not np.allclose(rows["t_out_mean_target_fc"], rows["t_out_mean_target"])
+    exact = room_rows(synthetic_room(), location="loc1", error_scale=0.0)
+    assert np.allclose(exact["physics_forecast"], exact["physics_persistence"])
+    assert np.allclose(exact["t_out_change_fc"], exact["t_out_change"])
+
+
+def test_no_foresight_models_never_see_target_day_weather():
+    leaky = {"t_out_mean_target", "t_out_min_target", "rh_out_mean_target", "t_out_change", "physics_persistence"}
+    assert not leaky & set(FEATURES["lightgbm_no_foresight"])
+    assert not leaky & set(FEATURES["lightgbm_forecast"]) - {"physics_persistence"}
+    assert "physics_persistence" not in FEATURES["hybrid_forecast"]

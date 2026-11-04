@@ -11,15 +11,31 @@ from sklearn.model_selection import GroupKFold
 from mould_risk.dataset import HIGH_RISK_HOURS, HORIZONS, ROOM_FEATURES
 from mould_risk.paths import PROCESSED, SURVEYS
 
-WEATHER_AND_STATE = [
+STATE = [
     "fav_lag1", "fav_lag2", "fav_mean7", "vtt_surface", "t_in_mean", "t_in_min", "rh_in_mean", "rh_in_max",
-    "vp_excess", "t_out_mean", "t_out_min", "rh_out_mean", "t_out_mean_target", "t_out_min_target",
-    "rh_out_mean_target", "t_out_change", "doy_sin", "doy_cos", "weekend_target", "persistence",
+    "vp_excess", "t_out_mean", "t_out_min", "rh_out_mean", "doy_sin", "doy_cos", "weekend_target", "persistence",
 ]
-FEATURES = {
-    "lightgbm": WEATHER_AND_STATE + ROOM_FEATURES,
-    "hybrid": WEATHER_AND_STATE + ROOM_FEATURES + ["physics_persistence"],
+TARGET_WEATHER = ["t_out_mean_target", "t_out_min_target", "rh_out_mean_target", "t_out_change"]
+# oracle: actual target-day weather (upper bound); forecast: actual + assumed error; no_foresight: none.
+SCENARIOS = {
+    "oracle": (TARGET_WEATHER, "physics_persistence"),
+    "forecast": ([f"{c}_fc" for c in TARGET_WEATHER], "physics_forecast"),
+    "no_foresight": ([], None),
 }
+
+
+def model_features():
+    out = {}
+    for scenario, (weather, physics) in SCENARIOS.items():
+        out[f"lightgbm_{scenario}"] = STATE + weather + ROOM_FEATURES
+        if physics:
+            out[f"hybrid_{scenario}"] = STATE + weather + ROOM_FEATURES + [physics]
+    return out
+
+
+FEATURES = model_features()
+BASELINES = ["persistence", "physics_persistence", "physics_forecast"]
+HEADLINE = "lightgbm_forecast"
 PARAMS = {"objective": "regression_l1", "learning_rate": 0.05, "num_leaves": 63, "min_data_in_leaf": 200,
           "feature_fraction": 0.8, "bagging_fraction": 0.8, "bagging_freq": 1, "verbose": -1, "seed": 7}
 ROUNDS = 400
@@ -52,11 +68,11 @@ def cross_validate(data, h):
         for name, cols in FEATURES.items():
             model = lgb.train(PARAMS, lgb.Dataset(df.loc[train, cols], df.loc[train, "target"]), ROUNDS)
             df.loc[test, name] = model.predict(df.loc[test, cols])
-            if name == "lightgbm":
+            if name == HEADLINE:
                 c = model.predict(df.loc[test, cols], pred_contrib=True)[:, :-1]
                 contrib.setdefault(name, []).append(pd.DataFrame(np.abs(c), columns=cols))
-    df[["lightgbm", "hybrid"]] = df[["lightgbm", "hybrid"]].clip(0, 24)
-    importance = pd.concat(contrib["lightgbm"]).mean().sort_values(ascending=False)
+    df[list(FEATURES)] = df[list(FEATURES)].clip(0, 24)
+    importance = pd.concat(contrib[HEADLINE]).mean().sort_values(ascending=False)
     return df, importance
 
 
@@ -64,7 +80,7 @@ def results_table(preds):
     rows = []
     for h, df in preds.items():
         for subset, part in (("all", df), ("heating season", df[df["date"].dt.month.isin([10, 11, 12, 1, 2, 3, 4])])):
-            for model in ("persistence", "physics_persistence", "lightgbm", "hybrid"):
+            for model in BASELINES + list(FEATURES):
                 rows.append({"horizon": h, "subset": subset, "model": model, "n": len(part), **metrics(part, model)})
     return pd.DataFrame(rows)
 
