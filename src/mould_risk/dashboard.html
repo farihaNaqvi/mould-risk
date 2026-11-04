@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mould Risk Forecast</title>
+<style>
+  :root {
+    --bg: #f7f7f5; --surface: #ffffff; --text: #1d1d1b; --muted: #6b6b66; --line: #e2e2dc;
+    --low: #d9eadf; --low-ink: #1f5132; --mod: #f6e3b8; --mod-ink: #6b4a00; --high: #f3c9c2; --high-ink: #7a1f12;
+    --accent: #2f5d8a; --threshold: #b3261e;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #161614; --surface: #20201d; --text: #ecebe6; --muted: #a3a29b; --line: #34342f;
+      --low: #1e3a29; --low-ink: #a9dcb9; --mod: #4a3a12; --mod-ink: #f3d68c; --high: #4d211b; --high-ink: #f4b0a5;
+      --accent: #8fb8e0; --threshold: #f2867c;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 900px; margin: 0 auto; padding: 24px 16px 48px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 20px; }
+  .controls { display: flex; flex-wrap: wrap; gap: 12px; align-items: end; margin-bottom: 16px; }
+  label { display: flex; flex-direction: column; font-size: 13px; color: var(--muted); gap: 4px; }
+  select, input { font: inherit; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--text); }
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin-bottom: 16px; overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  th { font-size: 13px; color: var(--muted); font-weight: 500; }
+  tbody tr { cursor: pointer; }
+  tbody tr:hover td:first-child, tbody tr.sel td:first-child { color: var(--accent); font-weight: 600; }
+  .pill { display: inline-block; min-width: 72px; padding: 3px 8px; border-radius: 999px; font-size: 13px; text-align: center; }
+  .low { background: var(--low); color: var(--low-ink); }
+  .moderate { background: var(--mod); color: var(--mod-ink); }
+  .high { background: var(--high); color: var(--high-ink); }
+  .obs { color: var(--muted); font-size: 12px; display: block; }
+  .legend { display: flex; gap: 12px; flex-wrap: wrap; font-size: 13px; color: var(--muted); margin-top: 10px; }
+  .note { color: var(--muted); font-size: 13px; }
+  svg text { fill: var(--muted); font-size: 11px; }
+  #err { color: var(--threshold); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Mould risk forecast</h1>
+  <p class="sub">Hours tomorrow and the two days after when the coldest wall surface sits at 80 % humidity or above.
+    Replay of IDEAL home sensor data (Scotland, 2016-18).</p>
+
+  <div class="controls">
+    <label>Home <select id="home"></select></label>
+    <label>Forecast issued on <input type="date" id="date"></label>
+  </div>
+  <p id="err"></p>
+
+  <div class="card">
+    <table>
+      <thead><tr><th>Room</th><th id="d1">+1 day</th><th id="d2">+2 days</th><th id="d3">+3 days</th></tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+    <div class="legend">
+      <span><span class="pill low">low</span> under 2 h</span>
+      <span><span class="pill moderate">moderate</span> 2 to 6 h</span>
+      <span><span class="pill high">high</span> 6 h or more</span>
+      <span>Small grey number: what actually happened.</span>
+    </div>
+  </div>
+
+  <div class="card" id="detail" hidden>
+    <strong id="dtitle"></strong>
+    <p id="advice" class="note"></p>
+    <svg id="chart" viewBox="0 0 640 180" width="100%" role="img" aria-label="Observed high-risk hours, last 60 days"></svg>
+    <p class="note">Observed hours per day over the 60 days before the forecast. Dashed line: the 6 h high-risk threshold.</p>
+  </div>
+
+  <p class="note">Scores are in-sample (the served model was trained on every home). Accuracy figures come from home-grouped cross-validation, see the README.</p>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+let rooms = [], selected = null;
+
+async function get(url) {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error((await r.json()).detail || r.statusText);
+  return r.json();
+}
+
+function cell(f) {
+  if (!f) return "<td>-</td>";
+  return `<td><span class="pill ${f.band}">${f.hours.toFixed(1)} h</span><span class="obs">${f.observed_hours.toFixed(1)} h</span></td>`;
+}
+
+async function loadHome() {
+  const home = +$("home").value, date = $("date").value;
+  $("err").textContent = "";
+  try {
+    const data = await get(`/homes/${home}/forecast?date=${date}`);
+    $("rows").innerHTML = data.map(r => {
+      const by = Object.fromEntries(r.forecasts.map(f => [f.horizon, f]));
+      return `<tr data-room="${r.roomid}"><td>${r.type} ${r.roomid}</td>${cell(by[1])}${cell(by[2])}${cell(by[3])}</tr>`;
+    }).join("");
+    const any = data.find(r => r.forecasts.length);
+    if (any) any.forecasts.forEach(f => $("d" + f.horizon).textContent = f.target_date);
+    else $("err").textContent = "No readings for this home on that date. Try another date.";
+    document.querySelectorAll("#rows tr").forEach(tr => tr.onclick = () => showRoom(+tr.dataset.room, data));
+    const keep = data.find(r => r.roomid === selected) || data[0];
+    if (keep) showRoom(keep.roomid, data);
+  } catch (e) { $("err").textContent = e.message; }
+}
+
+async function showRoom(roomid, data) {
+  selected = roomid;
+  document.querySelectorAll("#rows tr").forEach(tr => tr.classList.toggle("sel", +tr.dataset.room === roomid));
+  const r = data.find(x => x.roomid === roomid);
+  $("detail").hidden = false;
+  $("dtitle").textContent = `${r.type} ${roomid}`;
+  const worst = r.forecasts.reduce((a, f) => (!a || f.hours > a.hours ? f : a), null);
+  $("advice").textContent = worst ? `Next 3 days: ${worst.band}. ${worst.advice}` : "";
+  drawChart(await get(`/rooms/${roomid}/history?end=${$("date").value}&days=60`));
+}
+
+function drawChart(hist) {
+  const W = 640, H = 180, L = 28, B = 22, T = 8;
+  const x = (i) => L + (i * (W - L - 8)) / Math.max(hist.length - 1, 1);
+  const y = (v) => T + (1 - v / 24) * (H - T - B);
+  const pts = hist.map((d, i) => `${x(i).toFixed(1)},${y(d.hours).toFixed(1)}`).join(" ");
+  const ticks = [0, 6, 12, 24].map(v => `<text x="0" y="${y(v) + 4}">${v}h</text>`).join("");
+  const first = hist[0] ? `<text x="${L}" y="${H - 4}">${hist[0].date}</text>` : "";
+  const last = hist.length ? `<text x="${W - 8}" y="${H - 4}" text-anchor="end">${hist[hist.length - 1].date}</text>` : "";
+  $("chart").innerHTML = `${ticks}${first}${last}
+    <line x1="${L}" x2="${W - 8}" y1="${y(24)}" y2="${y(24)}" stroke="var(--line)"/>
+    <line x1="${L}" x2="${W - 8}" y1="${y(0)}" y2="${y(0)}" stroke="var(--line)"/>
+    <line x1="${L}" x2="${W - 8}" y1="${y(6)}" y2="${y(6)}" stroke="var(--threshold)" stroke-dasharray="4 4"/>
+    <polyline points="${pts}" fill="none" stroke="var(--accent)" stroke-width="2"/>`;
+}
+
+async function init() {
+  try {
+    rooms = await get("/rooms");
+    const homes = [...new Set(rooms.map(r => r.homeid))];
+    $("home").innerHTML = homes.map(h => `<option value="${h}">${h}</option>`).join("");
+    await setDates();
+    $("home").onchange = async () => { await setDates(); loadHome(); };
+    $("date").onchange = loadHome;
+    loadHome();
+  } catch (e) { $("err").textContent = e.message; }
+}
+
+async function setDates() {
+  const room = rooms.find(r => r.homeid === +$("home").value);
+  const d = await get(`/rooms/${room.roomid}/dates`);
+  $("date").min = d.first; $("date").max = d.last;
+  if (!$("date").value || $("date").value < d.first || $("date").value > d.last) {
+    // default to a winter day inside the range when there is one
+    const winter = ["2017-01-15", "2018-01-15", "2016-12-15"].find(w => w >= d.first && w <= d.last);
+    $("date").value = winter || d.last;
+  }
+}
+
+init();
+</script>
+</body>
+</html>
